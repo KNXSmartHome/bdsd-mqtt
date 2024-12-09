@@ -1,5 +1,9 @@
 const bdsdClient = require('bdsd.client');
 const mqtt = require('mqtt');
+const express = require("express");
+const app = express();
+const jsonParser = express.json();
+
 
 const BdsdMqtt = function (params) {
   let self = {};
@@ -49,13 +53,16 @@ const BdsdMqtt = function (params) {
 
   // now publish
   self._bdsdClient.on('value', payload => {
-    let message = {id: payload.id, value: payload.value};
+    let message = { id: payload.id, value: payload.value };
     console.log(`sending data to ${self._mqttClientOpts.topic}/knx2mqtt: ${JSON.stringify(message)}`);
     self._mqttClient.publish(`${self._mqttClientOpts.topic}/knx2mqtt`, JSON.stringify(message));
   });
+
   // now on incoming data
   self._mqttClient.on('message', (topic, payload) => {
     try {
+      const devices = new Map(Object.entries(payload));
+
       let datapoint = JSON.parse(payload.toString());
       self._bdsdClient
         .setValue(datapoint.id, datapoint.value)
@@ -68,6 +75,61 @@ const BdsdMqtt = function (params) {
     } catch (e) {
       console.log(`error on parsing incoming message`, e);
     }
+  });
+  app.use(express.json());
+  app.use(function (req, res, next) {
+    res.setHeader("Content-Type", "application/json");
+    next();
+  });
+
+  app.get("/api/datapoints/:id", function (req, res) {
+    const ids = req.params.id.split(",")
+    const responses = new Map();
+    ids.forEach(function (element, index) {
+      const id = parseInt(element, 10)
+      self._bdsdClient
+        .getValue(id)
+        .then(v => {
+          responses.set(id, v)
+        })
+        .catch(e => {
+          responses.set(id, e)
+        })
+        .finally(() => {
+          if (ids.length == index + 1) {
+            res.status(200).send(JSON.stringify(Object.fromEntries(responses)))
+          }
+        });
+    })
+  });
+
+  app.post("/api/datapoints", function (req, res) {
+    const devices = new Map(Object.entries(req.body));
+    const responses = new Map();
+
+    devices.forEach((value, key, map) => {
+      self._bdsdClient
+        .setValue(parseInt(key, 10), value)
+        .then(v => {
+          responses.set(key, v)
+        })
+        .catch(e => {
+          responses.set(key, e)
+        })
+        .finally(() => {
+          if (responses.size == devices.size) {
+            res.status(200).send(JSON.stringify(Object.fromEntries(responses)))
+          }
+        });
+    });
+  });
+
+  app.use(function (req, res, next) {
+    res.status(404).send('Sorry cant find that!');
+  });
+
+  app.listen(3000, function () {
+    console.log('Server is listening on port 3000')
   });
   return self;
 };
